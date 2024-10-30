@@ -5,6 +5,12 @@
 #include <string.h>
 #include <time.h>
 
+// structs
+typedef struct {
+  float **weights;
+  float *bias;
+} Model;
+
 // shapes
 static const int train_size = 60000;
 static const int test_size = 10000;
@@ -33,18 +39,36 @@ void one_hot(int x, int labels, float *y) {
   y[x] = 1;
 }
 
+// data shuffling for training.
+void shuffle_data(float **x_train, int *y_train) {
+  for (int i = train_size - 1; i > 0; i--) {
+    int j = rand() % (i + 1);
+
+    float *temp_x = x_train[i];
+    x_train[i] = x_train[j];
+    x_train[j] = temp_x;
+
+    int temp_y = y_train[i];
+    y_train[i] = y_train[j];
+    y_train[j] = temp_y;
+  }
+}
+
 // softmax activation function. z and a has to be the same size as output_size.
 void softmax(float *z, float *a) {
-  float exp_z[output_size];
-  float sum = 0;
+  float max_z = z[0];
+  for (int i = 1; i < output_size; i++)
+    if (z[i] > max_z)
+      max_z = z[i];
 
+  float sum = 0.0;
   for (int i = 0; i < output_size; i++) {
-    exp_z[i] = exp((double)z[i]);
-    sum += exp_z[i];
+    a[i] = expf(z[i] - max_z);
+    sum += a[i];
   }
 
   for (int i = 0; i < output_size; i++)
-    a[i] = exp_z[i] / sum;
+    a[i] /= sum;
 }
 
 /* categorical crossentropy loss function. y_true and y_pred has to be the same
@@ -54,7 +78,7 @@ float cce(float *y_true, float *y_pred) {
   for (int i = 0; i < output_size; i++)
     if (y_pred[i] < 1e-15)
       y_pred_clipped[i] = 1e-15;
-    else if (y_pred[i] > (1 - 1e-15))
+    else if (y_pred[i] > (1 - 1e-15) && y_pred[i] != 1)
       y_pred_clipped[i] = 1 - 1e-15;
     else
       y_pred_clipped[i] = y_pred[i];
@@ -66,19 +90,7 @@ float cce(float *y_true, float *y_pred) {
   return -cross_entropy;
 }
 
-/* derivation of the categorical crossentropy loss function. y_true, y_pred, and
- * d_output has to be the same size as output_size. */
-void d_cce(float *y_true, float *y_pred, float *d_output) {
-  for (int i = 0; i < output_size; i++)
-    if (y_pred[i] < 1e-15)
-      d_output[i] = 1e-15 - y_true[i];
-    else if (y_pred[i] > (1 - 1e-15))
-      d_output[i] = (1 - 1e-15) - y_true[i];
-    else
-      d_output[i] = y_pred[i] - y_true[i];
-}
-
-// argmax, values have to be the same size as size.
+// argmax. values have to be the same size as size.
 int argmax(float *values, int size) {
   int index = 0;
 
@@ -90,28 +102,28 @@ int argmax(float *values, int size) {
 }
 
 // infers the model on some data. output has to be the same size as output_size.
-void predict(float **weights, float *bias, float *x, float *output) {
+void predict(Model *model, float *x, float *output) {
   float z[output_size];
 
   for (int i = 0; i < output_size; i++) {
     float dot_product = 0.0;
 
     for (int j = 0; j < input_size; j++)
-      dot_product += weights[i][j] * x[j];
+      dot_product += model->weights[i][j] * x[j];
 
-    z[i] = dot_product + bias[i];
+    z[i] = dot_product + model->bias[i];
   }
 
   softmax(z, output);
 }
 
-// trains the model based on given weights/bias on epochs, learning rate, and
-// data.
-void train(float **weights, float *bias, float **x_train, uint8_t *y_train,
-           float learning_rate, int epochs) {
+// trains the model for epochs, learning rate, and data.
+void train(Model *model, float **x_train, int *y_train, float learning_rate,
+           int epochs) {
   for (int epoch = 0; epoch < epochs; epoch++) {
+    shuffle_data(x_train, y_train);
     float loss = 0.0;
-    float accuracy = 1e-15;
+    float accuracy = 0.0;
 
     for (int sample = 0; sample < train_size; sample++) {
       float *x = x_train[sample];
@@ -120,7 +132,7 @@ void train(float **weights, float *bias, float **x_train, uint8_t *y_train,
       one_hot(y, output_size, y_true);
 
       float y_pred[output_size];
-      predict(weights, bias, x, y_pred);
+      predict(model, x, y_pred);
       loss += cce(y_true, y_pred);
       accuracy += argmax(y_pred, output_size) == y;
 
@@ -128,9 +140,9 @@ void train(float **weights, float *bias, float **x_train, uint8_t *y_train,
         float error = y_pred[i] - y_true[i];
 
         for (int j = 0; j < input_size; j++)
-          weights[i][j] -= learning_rate * (error * x[j]);
+          model->weights[i][j] -= learning_rate * (error * x[j]);
 
-        bias[i] -= learning_rate * error;
+        model->bias[i] -= learning_rate * error;
       }
     }
 
@@ -139,10 +151,10 @@ void train(float **weights, float *bias, float **x_train, uint8_t *y_train,
   }
 }
 
-// evaluates the model based on given weights/bias and data.
-void evaluate(float **weights, float *bias, float **x_test, uint8_t *y_test,
-              float *val_accuracy, float *val_loss) {
-  *val_accuracy = 1e-15;
+// evaluates the model with unseen data.
+void evaluate(Model *model, float **x_test, int *y_test, float *val_accuracy,
+              float *val_loss) {
+  *val_accuracy = 0.0;
   *val_loss = 0.0;
 
   for (int sample = 0; sample < test_size; sample++) {
@@ -152,7 +164,7 @@ void evaluate(float **weights, float *bias, float **x_test, uint8_t *y_test,
     one_hot(y, output_size, y_true);
 
     float y_pred[output_size];
-    predict(weights, bias, x, y_pred);
+    predict(model, x, y_pred);
     *val_loss += cce(y_true, y_pred);
     *val_accuracy += argmax(y_pred, output_size) == y;
   }
@@ -169,6 +181,11 @@ long get_file_size(FILE *file) {
   return size;
 }
 
+void mem_err() {
+  fprintf(stderr, "Couldn't allocate memory");
+  exit(1);
+}
+
 int main(void) {
   // seed the rng
   srand(time(NULL));
@@ -182,20 +199,36 @@ int main(void) {
   size_t dataset_size = (size_t)get_file_size(dataset_file);
 
   uint8_t *dataset_buffer = malloc(dataset_size * sizeof(uint8_t));
-  fread(dataset_buffer, 1, dataset_size, dataset_file);
+  if (dataset_buffer == NULL)
+    mem_err();
+  if (fread(dataset_buffer, 1, dataset_size, dataset_file) != dataset_size) {
+    fprintf(stderr, "Couldn't read file properly");
+    return 1;
+  }
   fclose(dataset_file);
 
   float **x_train = malloc(train_size * sizeof(float *));
-  for (int i = 0; i < train_size; i++)
+  if (x_train == NULL)
+    mem_err();
+  for (int i = 0; i < train_size; i++) {
     x_train[i] = malloc(x_sample_size * sizeof(float));
+    if (x_train[i] == NULL)
+      mem_err();
+  }
 
-  uint8_t *y_train = malloc(train_size * sizeof(uint8_t));
+  int *y_train = malloc(train_size * sizeof(int));
+  if (y_train == NULL)
+    mem_err();
 
   float **x_test = malloc(test_size * sizeof(float *));
+  if (x_test == NULL)
+    mem_err();
   for (int i = 0; i < test_size; i++)
     x_test[i] = malloc(x_sample_size * sizeof(float));
 
-  uint8_t *y_test = malloc(test_size * sizeof(uint8_t));
+  int *y_test = malloc(test_size * sizeof(int));
+  if (y_test == NULL)
+    mem_err();
 
   for (int i = 0; i < train_size; i++) {
     const int start = train_x_offset + (i * x_sample_size);
@@ -215,42 +248,44 @@ int main(void) {
   for (int i = 0; i < test_size; i++)
     y_test[i] = dataset_buffer[test_y_offset + i];
 
+  free(dataset_buffer);
+
   // initialize model
-  float **weights = malloc(output_size * sizeof(float *));
-  float *bias = malloc(output_size * sizeof(float));
+  Model model;
+  model.weights = malloc(output_size * sizeof(float *));
+  model.bias = malloc(output_size * sizeof(float));
 
   for (int i = 0; i < output_size; i++) {
-    weights[i] = malloc(input_size * sizeof(float));
+    model.weights[i] = malloc(input_size * sizeof(float));
     for (int j = 0; j < input_size; j++)
-      weights[i][j] = randfloat() - 0.5;
+      model.weights[i][j] = randfloat() - 0.5;
 
-    bias[i] = 0;
+    model.bias[i] = 0;
   }
 
   // training
-  train(weights, bias, x_train, y_train, learning_rate, epochs);
+  train(&model, x_train, y_train, learning_rate, epochs);
 
-  // evaluating
-  float val_accuracy, val_loss;
-  evaluate(weights, bias, x_test, y_test, &val_accuracy, &val_loss);
-  printf("val_accuracy: %f\nval_loss: %f\n", val_accuracy, val_loss);
-
-  // end
   for (int i = 0; i < train_size; i++)
     free(x_train[i]);
   free(x_train);
   free(y_train);
+
+  // evaluating
+  float val_accuracy, val_loss;
+  evaluate(&model, x_test, y_test, &val_accuracy, &val_loss);
+  printf("val_accuracy: %f\nval_loss: %f\n", val_accuracy, val_loss);
 
   for (int i = 0; i < test_size; i++)
     free(x_test[i]);
   free(x_test);
   free(y_test);
 
+  // end
   for (int i = 0; i < output_size; i++)
-    free(weights[i]);
-  free(weights);
-  free(bias);
-  free(dataset_buffer);
+    free(model.weights[i]);
+  free(model.weights);
+  free(model.bias);
 
   return 0;
 }
