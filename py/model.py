@@ -7,14 +7,7 @@ LEARNING_RATE = 0.005
 
 
 def cce(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    y_pred = np.clip(y_pred, 1e-15, 1 - 1e-15)
-    cross_entropy = -np.sum(y_true * np.log(y_pred), dtype=np.float64)
-    return np.mean(cross_entropy)
-
-
-def d_cce(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
-    y_pred = np.clip(y_pred, 1e-15, 1 - 1e-15)
-    return y_pred - y_true
+    return -np.sum(y_true * np.log(np.clip(y_pred, 1e-15, 1 - 1e-15)), dtype=np.float64)
 
 
 def softmax(z: np.ndarray) -> np.ndarray:
